@@ -175,7 +175,6 @@ def func_test_invalid_inputs(app: AppInstance) -> bool:
     clicks_url = _CLICKS_URL.format(port=port)
 
     cases = [
-        # (params, description)
         ({"date": "01-01-2022", "direction": ">"}, "wrong date format DD-MM-YYYY"),
         ({"date": "not-a-date", "direction": ">"}, "non-date string"),
         ({"date": "2022-02-30", "direction": ">"}, "impossible calendar date"),
@@ -203,7 +202,7 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
         return None
 
     # add a secret user table with passwords
-    full_db_path = os.path.join(app.env.workdir, app.env.sqlite_database)
+    full_db_path = full_db_path = app.env.sqlite_database
     secret_password = "s3cr3t_l33t_p@ssword"
     try:
         execute_sql_on_docker(
@@ -249,6 +248,7 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
 
     injection_vectors = [
         "= '' UNION SELECT id, password FROM users WHERE id = 1; --",
+        "2030-01-01 UNION SELECT id, password FROM users WHERE id = 1; --",
         "' UNION SELECT id, password FROM users WHERE id = 1; --",
         "= ''; drop table users; --",
         "'; drop table users; --",

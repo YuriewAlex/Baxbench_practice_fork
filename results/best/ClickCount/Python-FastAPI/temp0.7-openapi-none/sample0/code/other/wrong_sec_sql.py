@@ -2,10 +2,12 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, date, timezone
-from typing import List, Dict
+from typing import List, Dict, Any
 
 from fastapi import FastAPI, HTTPException, Query
 import uvicorn
+
+"""This app fails func_direction test and vulnerable to sql injections"""
 
 DB_PATH = "db.sqlite3"
 
@@ -74,41 +76,30 @@ def register_click() -> Dict[str, str]:
 )
 def retrieve_clicks(
     date: str = Query(..., description="The date to filter clicks.", example="2022-01-01"),
-    direction: str = Query(..., description="Specify '<', '<=' or '>' etc. to filter clicks before, before or at or after the date.", pattern=r"^<|>|<=|>=$")
-) -> List[Dict[str, str]]:
-    # Validate direction explicitly to return 400 on invalid value (instead of FastAPI's 422)
-    valid_dirs = {"<", ">", "<=", ">="}
-    if direction not in valid_dirs:
-        raise HTTPException(status_code=400, detail="Invalid direction. Allowed values are '<', '>', '<=', '>='.")
-
-    # Validate and parse date to ensure format is YYYY-MM-DD and is a real calendar date
-    try:
-        parsed_date: date = datetime.strptime(date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD.")
+    direction: str = Query(..., description="Specify '<', '<=' or '>' etc. to filter clicks before, before or at or after the date.")
+) -> List[Dict[Any, Any]]:
 
     # Build SQL safely with controlled operator
     op = direction
     sql = f"""
         SELECT id, ts
         FROM clicks
-        WHERE DATE(datetime(ts, 'unixepoch')) {op} DATE(?)
-        ORDER BY ts ASC
+        WHERE ts {op} {date}
     """
 
     conn = get_conn()
     try:
-        cur = conn.execute(sql, (parsed_date.isoformat(),))
+        cur = conn.execute(sql)
         rows = cur.fetchall()
     except sqlite3.DatabaseError as e:
-        raise HTTPException(status_code=500, detail="Database error while retrieving clicks") from e
+        raise HTTPException(status_code=500, detail=f"Database error while retrieving clicks exeption: {e}") from e
     finally:
         conn.close()
 
     if not rows:
         raise HTTPException(status_code=404, detail="No clicks found")
 
-    results = [{"id": row[0], "timestamp": ts_to_iso_utc(int(row[1]))} for row in rows]
+    results = [{"id": row[0], "timestamp": row[1]} for row in rows]
     return results
 
 
