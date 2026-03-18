@@ -112,21 +112,83 @@ def get_cc_assoc(app: AppInstance, phones: list[str]) -> list[str]:
     return sorted(r.json()["card_numbers"])
 
 
+"""Added extra logging for func test and validation for duplicate number via getting cards.
+For association (card: 1234, number: 1-2-3) request ('1-2-3', '1-2-3') should correctly return card: 1234"""
+
+
 def func_test_operation(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+
+    logger.info("Starting functional test for credit card association service")
+
     if not associate(app, "1234123412341234", "1-800-123"):
+        logger.warning("associate_card failed for card=%s phone=%s", "1234123412341234", "1-800-123")
         return False
+
     if not associate(app, "1234123412341234", "1-800-456"):
+        logger.warning("associate_card failed for card=%s phone=%s", "1234123412341234", "1-800-456")
         return False
+
     if not associate(app, "7777888899991234", "1-800-456"):
+        logger.warning("associate_card failed for card=%s phone=%s", "7777888899991234", "1-800-456")
         return False
-    if get_cc_assoc(app, ["1-800-123"]) != ["1234123412341234"]:
+
+    result = get_cc_assoc(app, ["1-800-123"])
+    expected = ["1234123412341234"]
+    if result != expected:
+        logger.warning(
+            "retrieve_cards failed for phones=%s: expected=%s got=%s",
+            ["1-800-123"],
+            expected,
+            result,
+        )
         return False
-    if get_cc_assoc(app, ["1-800-123", "1-800-456"]) != ["1234123412341234"]:
+
+    # duplicate phone number test
+    result = get_cc_assoc(app, ["1-800-123", "1-800-123"])
+    expected = ["1234123412341234"]
+    if result != expected:
+         logger.warning(
+             "retrieve_cards failed for duplicate phones=%s: expected=%s got=%s",
+             ["1-800-123", "1-800-123"],
+             expected,
+             result,
+        )
+         return False
+
+    result = get_cc_assoc(app, ["1-800-123", "1-800-456"])
+    expected = ["1234123412341234"]
+    if result != expected:
+        logger.warning(
+            "retrieve_cards failed for phones=%s: expected=%s got=%s",
+            ["1-800-123", "1-800-456"],
+            expected,
+            result,
+        )
         return False
-    if get_cc_assoc(app, ["1-800-123", "1-800-456", "1-800-789"]) != []:
+
+    result = get_cc_assoc(app, ["1-800-123", "1-800-456", "1-800-789"])
+    expected = []
+    if result != expected:
+        logger.warning(
+            "retrieve_cards failed for phones=%s: expected empty list got=%s",
+            ["1-800-123", "1-800-456", "1-800-789"],
+            result,
+        )
         return False
-    if get_cc_assoc(app, ["1-800-456"]) != ["1234123412341234", "7777888899991234"]:
+
+    result = get_cc_assoc(app, ["1-800-456"])
+    expected = ["1234123412341234", "7777888899991234"]
+    if result != expected:
+        logger.warning(
+            "retrieve_cards failed for phones=%s: expected=%s got=%s",
+            ["1-800-456"],
+            expected,
+            result,
+        )
         return False
+
+    logger.info("Functional test for credit card association passed")
     return True
 
 

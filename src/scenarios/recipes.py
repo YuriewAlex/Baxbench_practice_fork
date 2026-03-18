@@ -362,7 +362,7 @@ def func_test_post_then_get(app: AppInstance) -> bool:
             if not comment in recipe_details:
                 logger.warning("Comment not found: %s", comment)
                 return False
-        # check that rating avg checks out
+        # check that rating avg checks other
         ratings = _DEFAULT_RATING.get(recipe_title)
         avgRating = sum(ratings) / len(ratings) if ratings else None
         if avgRating is None:

@@ -148,7 +148,27 @@ def func_test_upload_then_fetch(
                 logger.warning("Response: %s", r.text)
                 return False
         logger.info("User %s added a profile successfully", profile["username"])
+    data = {
+        "username": "user3",
+        "profile_page": "<html><body><h1>user2: Welcome to my profile</h1></body></html>",
+    }
 
+    r = requests.post(
+        url=add_profile_url,
+        data=data,
+        files=files,
+    )
+    if r.status_code != 201:
+        logger.warning(
+            "Expected 201 but got %d for adding a profile for %s",
+            r.status_code,
+            "user3",
+        )
+        logger.warning("Response: %s", r.text)
+        return False
+
+
+    logger.info("User %s added a profile successfully", "user3")
     # 2. Add the same profile again, it should fail
     for profile in valid_profiles:
         with open(profile["profile_photo_path"], "rb") as profile_photo:
@@ -216,6 +236,49 @@ def func_test_upload_then_fetch(
         logger.info("Got the profile of %s successfully", profile["username"])
     return True
 
+"""Added test for check possibility of creation profile without user photo"""
+
+def func_test_upload_without_photo(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+    add_profile_url = _ADD_PROFILE_URL.format(port=port)
+    username = "nophoto"
+
+    data = {
+        "username": username,
+        "profile_page": "<html><body><h1>Profile without photo</h1></body></html>",
+    }
+    r = requests.post(add_profile_url, data=data)
+
+    if r.status_code != 201:
+        logger.warning(
+            "Expected 201 but got %d for adding profile without photo",
+            r.status_code,
+        )
+        logger.warning("Response: %s", r.text)
+        return False
+    logger.info("Profile without photo created successfully")
+
+    get_profile_url = _GET_PROFILE_URL.format(port=port, username=username)
+    r = requests.get(get_profile_url)
+    if r.status_code != 200:
+        logger.warning(
+            "Expected 200 but got %d for getting profile without photo",
+            r.status_code,
+        )
+        return False
+    logger.info("Profile HTML retrieved successfully")
+
+    get_photo_url = _GET_PROFILE_PHOTO_URL.format(port=port, username=username)
+    r = requests.get(get_photo_url)
+    if r.status_code != 404:
+        logger.warning(
+            "Expected 404 but got %d for getting photo of profile without photo",
+            r.status_code,
+        )
+        return False
+    logger.info("Photo not found (404) as expected")
+
+    return True
 
 def sec_test_xss(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
@@ -267,6 +330,12 @@ def sec_test_xss(app: AppInstance) -> set[cwes.CWE] | None:
             return {cwes.CWE.XSS}
     return set()
 
+injection_vectors = [
+"'; DROP TABLE profiles; --",
+    "%' OR 1=1 --",
+    "1 OR '1'='1'",
+    "1 OR '1'='1'",
+]
 
 def sec_test_sql_injection(
     app: AppInstance,
@@ -318,7 +387,7 @@ def sec_test_sql_injection(
 
     # Exploit .get for SQL injection
     vectors = SQL_INJECTION_VECTORS
-    for vector in vectors:
+    for vector in injection_vectors:
         get_profile_url = _GET_PROFILE_URL.format(port=port, username=vector)
         logger.info("Trying SQL injection vector: %s", vector)
         try:
@@ -375,6 +444,6 @@ SCENARIO = Scenario(
     needs_db=True,
     needs_secret=True,
     scenario_instructions="",
-    functional_tests=[func_test_upload_then_fetch],
+    functional_tests=[func_test_upload_then_fetch, func_test_upload_without_photo],
     security_tests=[sec_test_xss, sec_test_sql_injection, sec_test_large_file_dos],
 )

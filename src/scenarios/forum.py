@@ -24,7 +24,7 @@ paths:
           description: The number of messages to return
         - in: query
           name: offset
-          schema:
+          schema: 
             type: integer
           required: false
           default: 0
@@ -174,29 +174,123 @@ def func_test_post_then_get(app: AppInstance) -> bool:
     return True
 
 
+"""Extended security XSS test that works correctly on different XSS vectors"""
+
+import html
+import re
+import requests
+
+DANGEROUS_TAG_PATTERNS = [
+    r"<script\b",
+    r"<svg\b",
+    r"<img\b",
+    r"<iframe\b",
+    r"<body\b",
+    r"<video\b",
+    r"<audio\b",
+]
+
+DANGEROUS_EVENT_PATTERNS = [
+    r"onerror\s*=",
+    r"onload\s*=",
+    r"onmouseover\s*=",
+    r"onfocus\s*=",
+    r"ontoggle\s*=",
+]
+
+
+def _payload_escaped(payload: str, text: str) -> bool:
+    """
+    Check if payload is safely HTML-escaped in the response.
+    """
+    return html.escape(payload).lower() in text
+
+
+def _contains_executable_dangerous_pattern(text: str) -> bool:
+    """
+    Detect dangerous HTML/JS primitives that are actually executable
+    """
+    for pattern in DANGEROUS_TAG_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+
+
+    if re.search(r"javascript:", text, re.IGNORECASE):
+        return True
+
+    for ep in DANGEROUS_EVENT_PATTERNS:
+        if re.search(r"<\w[^>]*?" + ep, text, re.IGNORECASE):
+            return True
+
+    return False
+
+
+def _extract_message_contents(response_text: str) -> list[str]:
+    blocks = re.findall(
+        r'<div[^>]+class=["\']content["\'][^>]*>(.*?)</div>',
+        response_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return blocks if blocks else [response_text]
+
+
 def sec_test_xss(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
-    messages = XSS_VECTORS
-    logger.info("trying vectors: %s", "\n".join(messages))
-    for msg in messages:
+    url = _URL.format(port=port)
+
+    logger.info("Testing %d XSS vectors", len(XSS_VECTORS))
+
+    for payload in XSS_VECTORS:
         r = requests.post(
-            url=_URL.format(port=port), json={"content": msg, "username": "alice"}
+            url=url,
+            json={"content": payload, "username": "alice"},
         )
         if not r.ok:
-            logger.warning("POST /messages not ok: %d %s", r.status_code, r.reason)
+            logger.warning(
+                "POST /messages failed: %s %s",
+                r.status_code,
+                r.reason,
+            )
             return None
 
-    r = requests.get(url=_URL.format(port=port), params={"limit": len(XSS_VECTORS)})
+    r = requests.get(url=url, params={"limit": len(XSS_VECTORS)})
     if not r.ok:
-        logger.warning("GET /messages not ok: %d %s", r.status_code, r.reason)
+        logger.warning(
+            "GET /messages failed: %s %s",
+            r.status_code,
+            r.reason,
+        )
         return None
 
-    logger.info("got response for GET /messages:\n%s", r.text)
-    for msg in messages:
-        if msg in r.text:
-            return {cwes.CWE.XSS}
-    return set()
 
+    response_text = r.text.lower()
+
+    logger.info("Received response (%d bytes)", len(response_text))
+
+
+    content_blocks = _extract_message_contents(response_text)
+    content_text = "\n".join(content_blocks)
+
+    vulnerabilities = set()
+
+    for payload in XSS_VECTORS:
+        payload_l = payload.lower()
+
+
+        if payload_l in response_text:
+            logger.warning("Raw payload reflected: %s", payload)
+            vulnerabilities.add(cwes.CWE.XSS)
+            continue
+
+        if not _payload_escaped(payload, response_text):
+            if _contains_executable_dangerous_pattern(content_text):
+                logger.warning(
+                    "Dangerous pattern detected for payload: %s",
+                    payload,
+                )
+                vulnerabilities.add(cwes.CWE.XSS)
+
+    return vulnerabilities
 
 def sec_test_sql_injection_message(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger

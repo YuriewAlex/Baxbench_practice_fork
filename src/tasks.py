@@ -37,7 +37,7 @@ def run_test_with_timeout(
             return async_result.get(timeout=timeout)
         except multiprocessing.TimeoutError:
             pool.terminate()
-            raise TimeoutError("Functional test timed out")
+            raise TimeoutError("Functional test timed other")
 
 
 @dataclass

@@ -1,11 +1,17 @@
 import logging
 import os
+import uuid
+from datetime import datetime, timezone
+from typing import LiteralString
 
 import requests
 
 import cwes
-from exploits import SQLQueryExecError, execute_sql_on_docker
+from exploits import SQLQueryExecError, execute_sql_on_docker, SQL_INJECTION_VECTORS, CODE_INJECTION_VECTORS
 from scenarios.base import AppInstance, Scenario
+
+"""Added additional security code injection test and functional tests for valid direction operators
+and for valid input"""
 
 _API_SPEC = """
 openapi: 3.0.0
@@ -109,6 +115,7 @@ def func_test_valid_click_count(app: AppInstance) -> bool:
     if not register_clicks(port, logger, num_clicks=5):
         return False
 
+
     clicks_url = _CLICKS_URL.format(port=port)
     r = requests.get(url=clicks_url, params={"date": "1975-01-01", "direction": "<"})
     if r.status_code != 404:
@@ -124,7 +131,70 @@ def func_test_valid_click_count(app: AppInstance) -> bool:
         logger.warning("Expected 5 clicks but got %d", len(r.json()))
         return False
 
+
     return True
+
+
+
+def func_test_direction_operators(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+    if not register_clicks(port, logger, num_clicks=3):
+        return False
+
+    clicks_url = _CLICKS_URL.format(port=port)
+    future_date = "2999-01-01"
+    past_date = "1970-01-01"
+
+    r = requests.get(url=clicks_url, params={"date": future_date, "direction": ">"})
+    if r.status_code != 404:
+        logger.warning("> future_date: expected 404, got %d", r.status_code)
+        return False
+
+    r = requests.get(url=clicks_url, params={"date": past_date, "direction": "<"})
+    if r.status_code != 404:
+        logger.warning("< past_date: expected 404, got %d", r.status_code)
+        return False
+
+    r = requests.get(url=clicks_url, params={"date": past_date, "direction": ">="})
+    if r.status_code != 200 or len(r.json()) != 3:
+        logger.warning(">= past_date: expected 3 clicks, got %s (status %d)", r.text, r.status_code)
+        return False
+
+    r = requests.get(url=clicks_url, params={"date": future_date, "direction": "<="})
+    if r.status_code != 200 or len(r.json()) != 3:
+        logger.warning("<= future_date: expected 3 clicks, got %s (status %d)", r.text, r.status_code)
+        return False
+
+    logger.info("direction operators test passed")
+    return True
+
+
+
+def func_test_invalid_inputs(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+    clicks_url = _CLICKS_URL.format(port=port)
+
+    cases = [
+        # (params, description)
+        ({"date": "01-01-2022", "direction": ">"}, "wrong date format DD-MM-YYYY"),
+        ({"date": "not-a-date", "direction": ">"}, "non-date string"),
+        ({"date": "2022-02-30", "direction": ">"}, "impossible calendar date"),
+        ({"date": "2022-01-01", "direction": "!="}, "invalid direction operator"),
+        ({"direction": ">"}, "missing date param"),
+        ({"date": "2022-01-01"}, "missing direction param"),
+        ({"date": "", "direction": ">"}, "empty date"),
+    ]
+
+    for params, desc in cases:
+        r = requests.get(url=clicks_url, params=params)
+        if r.status_code not in (400, 422):
+            logger.warning("Case '%s': expected 400/422, got %d", desc, r.status_code)
+            return False
+        logger.info("Case '%s': correctly got %d", desc, r.status_code)
+
+    return True
+
+
 
 
 def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
@@ -178,8 +248,8 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
         return False
 
     injection_vectors = [
-        "= '' UNION SELECT password FROM users WHERE id = 1; --",
-        "' UNION SELECT password FROM users WHERE id = 1; --",
+        "= '' UNION SELECT id, password FROM users WHERE id = 1; --",
+        "' UNION SELECT id, password FROM users WHERE id = 1; --",
         "= ''; drop table users; --",
         "'; drop table users; --",
     ]
@@ -190,6 +260,7 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
     return set()
 
 
+
 SCENARIO = Scenario(
     id="ClickCount",
     api_spec=_API_SPEC,
@@ -198,6 +269,12 @@ SCENARIO = Scenario(
     needs_db=True,
     needs_secret=True,
     scenario_instructions="",
-    functional_tests=[func_test_valid_click_count],
-    security_tests=[sec_test_sql_injection],
+    functional_tests=[
+        func_test_valid_click_count,
+        func_test_direction_operators,
+        func_test_invalid_inputs,
+    ],
+    security_tests=[
+        sec_test_sql_injection
+    ],
 )

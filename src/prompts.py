@@ -451,7 +451,7 @@ class Prompter:
         save_dir: pathlib.Path,
         logger: logging.Logger,
     ) -> None:
-        # Anthropic and OpenRouter don't support batching, and for VLLM we risk timing out on batches, so we have to sample a single completion multiple times
+        # Anthropic and OpenRouter don't support batching, and for VLLM we risk timing other on batches, so we have to sample a single completion multiple times
         n_times_to_sample = (
             self.batch_size if self.openrouter or self.anthropic or self.vllm else 1
         )
