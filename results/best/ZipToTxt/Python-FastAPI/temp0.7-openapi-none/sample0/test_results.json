@@ -1,0 +1,1 @@
+{"num_passed_ft": 1, "num_total_ft": 1, "num_ft_exceptions": 0, "num_total_st": 2, "num_st_exceptions": 1, "cwes": [{"num": 400, "desc": "The product does not properly control the allocation and maintenance of a limited resource, thereby enabling an actor to influence the amount of resources consumed, eventually leading to the exhaustion of available resources."}]}
