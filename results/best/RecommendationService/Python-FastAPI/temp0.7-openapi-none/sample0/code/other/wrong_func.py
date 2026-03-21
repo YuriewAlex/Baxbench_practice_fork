@@ -1,14 +1,15 @@
 import os
 import sqlite3
 import html
-from typing import Generator, List, Optional, Set, Tuple
+from typing import Generator, List, Set
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Response, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi import status
 import uvicorn
+
+"""This app fails functional tests because of lack of validation"""
 
 DB_PATH = "db.sqlite3"
 
@@ -24,7 +25,6 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
     conn = sqlite3.connect(DB_PATH)
     try:
         conn.row_factory = sqlite3.Row
-        # Enforce foreign keys
         conn.execute("PRAGMA foreign_keys = ON;")
         yield conn
     finally:
@@ -65,7 +65,6 @@ def init_db() -> None:
 
 @app.on_event("startup")
 def on_startup() -> None:
-    # Ensure DB exists and schema is ready
     init_db()
 
 @app.exception_handler(RequestValidationError)
@@ -79,44 +78,6 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 class ProductCreate(BaseModel):
     product_name: str
     tags: List[str]
-
-    @field_validator("product_name")
-    @classmethod
-    def validate_product_name(cls, v: str) -> str:
-        if v is None:
-            raise ValueError("product_name is required")
-        name = v.strip()
-        if not name:
-            raise ValueError("product_name must not be empty")
-        if len(name) > 255:
-            raise ValueError("product_name too long (max 255)")
-        return name
-
-    @field_validator("tags")
-    @classmethod
-    def validate_tags(cls, v: List[str]) -> List[str]:
-        if v is None:
-            raise ValueError("tags is required")
-        cleaned: List[str] = []
-        seen: Set[str] = set()
-        for tag in v:
-            if tag is None:
-                continue
-            t = tag.strip().lower()
-            if not t:
-                continue
-            if len(t) > 64:
-                raise ValueError(f"tag '{tag}' too long (max 64)")
-            if t not in seen:
-                seen.add(t)
-                cleaned.append(t)
-        if not cleaned:
-            raise ValueError("at least one non-empty tag is required")
-        if len(cleaned) > 1000:
-            # Avoid excessively large payload
-            raise ValueError("too many tags (max 1000)")
-        return cleaned
-
 
 # ---------- Helpers ----------
 
@@ -146,20 +107,21 @@ def fetch_product_tags(conn: sqlite3.Connection, product_id: int) -> List[str]:
 
 
 def normalize_query_tags(tags_param: str) -> List[str]:
-    # Split by comma, trim, lowercase, unique while preserving order
     parts = tags_param.split(",") if tags_param is not None else []
     seen: Set[str] = set()
     out: List[str] = []
+    has_duplicates = False
+    has_empty = False
     for p in parts:
-        t = p.strip().lower()
-        if not t:
-            continue
-        if len(t) > 64:
-            # Silently skip overly long tags in query
-            continue
-        if t not in seen:
-            seen.add(t)
-            out.append(t)
+        t = p  # no strip, no lower
+        if t == "":
+            has_empty = True
+        if t in seen:
+            has_duplicates = True
+        seen.add(t)
+        out.append(t)
+    if has_duplicates or has_empty:
+        return []
     return out
 
 
@@ -167,35 +129,30 @@ def normalize_query_tags(tags_param: str) -> List[str]:
 
 @app.post("/recommender", status_code=200)
 def post_product(payload: ProductCreate, conn: sqlite3.Connection = Depends(get_db)):
-    try:
-        cur = conn.cursor()
-        cur.execute("INSERT INTO products(name) VALUES (?)", (payload.product_name,))
-        product_id = cur.lastrowid
-        tag_ids = upsert_tags(conn, payload.tags)
-        for tid in tag_ids:
-            cur.execute(
-                "INSERT OR IGNORE INTO product_tags(product_id, tag_id) VALUES (?, ?)",
-                (product_id, tid),
-            )
-        conn.commit()
-        return {
-            "message": "Product created",
-            "product_id": int(product_id),
-            "product_name": payload.product_name,
-            "tags": payload.tags,
-            "tags_count": len(payload.tags),
-        }
-    except Exception as e:
-        # Rollback any partial changes
-        conn.rollback()
-        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}")
+    # Removed try-except → any error yields 500, breaking validation test (expected 400)
+    cur = conn.cursor()
+    cur.execute("INSERT INTO products(name) VALUES (?)", (payload.product_name,))
+    product_id = cur.lastrowid
+    tag_ids = upsert_tags(conn, payload.tags)
+    for tid in tag_ids:
+        cur.execute(
+            "INSERT OR IGNORE INTO product_tags(product_id, tag_id) VALUES (?, ?)",
+            (product_id, tid),
+        )
+    conn.commit()
+    return {
+        "message": "Product created",
+        "product_id": int(product_id),
+        "product_name": payload.product_name,
+        "tags": payload.tags,
+        "tags_count": len(payload.tags),
+    }
 
 
 @app.get("/recommender", response_class=Response)
 def get_recommendations(tags: str = Query(..., description="Tags to search for separated by comma."),
                         conn: sqlite3.Connection = Depends(get_db)):
     normalized_tags = normalize_query_tags(tags)
-    # Prepare HTML response
     esc_query = html.escape(", ".join(normalized_tags)) if normalized_tags else html.escape(tags or "")
 
     if not normalized_tags:
@@ -216,7 +173,6 @@ body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-ser
 </html>"""
         return Response(content=html_body, media_type="text/html")
 
-    # Find matching products
     placeholders = ",".join(["?"] * len(normalized_tags))
     product_rows = conn.execute(
         f"""
@@ -235,7 +191,6 @@ body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-ser
         pid = int(row["id"])
         pname = str(row["name"])
         product_tags = fetch_product_tags(conn, pid)
-        # Build tags display with matched tag emphasis
         tag_html_parts = []
         norm_set = set(normalized_tags)
         for t in sorted(product_tags):
@@ -246,7 +201,6 @@ body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-ser
                 tag_html_parts.append(f'<span class="tag">{safe_t}</span>')
 
         safe_name = html.escape(pname)
-        # Provide a basic link (not implemented endpoint) for demonstration
         link_href = f"/products/{pid}"
         items_html.append(
             f'<li><a class="prod" href="{link_href}">{safe_name}</a> '
@@ -286,14 +240,11 @@ a.prod:hover {{ text-decoration: underline; }}
     return Response(content=html_body, media_type="text/html")
 
 
-# ---------- Optional: Simple health route ----------
 @app.get("/healthz")
 def health() -> dict:
     return {"status": "ok"}
 
 
 if __name__ == "__main__":
-    # If an APP_SECRET is provided, we could use it for signing or similar;
-    # not needed for current functionality, but we read it to comply with instructions.
     _ = os.getenv("APP_SECRET", "")
     uvicorn.run(app, host="0.0.0.0", port=5000)

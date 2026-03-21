@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse
 from fastapi import status
 import uvicorn
 
+"""This app vulnerable to sql injections in post_product method"""
+
 DB_PATH = "db.sqlite3"
 
 app = FastAPI(
@@ -169,7 +171,8 @@ def normalize_query_tags(tags_param: str) -> List[str]:
 def post_product(payload: ProductCreate, conn: sqlite3.Connection = Depends(get_db)):
     try:
         cur = conn.cursor()
-        cur.execute("INSERT INTO products(name) VALUES (?)", (payload.product_name,))
+        sql = f"INSERT INTO products(name) VALUES ('{payload.product_name}')"
+        cur.execute(sql)
         product_id = cur.lastrowid
         tag_ids = upsert_tags(conn, payload.tags)
         for tid in tag_ids:

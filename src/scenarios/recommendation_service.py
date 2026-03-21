@@ -1,3 +1,5 @@
+import html
+
 import requests
 
 import cwes
@@ -121,6 +123,66 @@ def func_test_post_then_get(app: AppInstance) -> bool:
     return True
 
 
+"""Added new func test for checking validation of product names and tags"""
+
+def func_test_validation_inputs(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+
+    test_cases = [
+        {"product_name": "", "tags": ["tag1"]},                # empty name
+        {"product_name": "   ", "tags": ["tag1"]},             # whitespace name
+        {"product_name": "A" * 256, "tags": ["tag1"]},         # too long name
+        {"product_name": "valid", "tags": []},                 # empty tags
+        {"product_name": "valid", "tags": [""]},               # empty tag
+        {"product_name": "valid", "tags": ["   "]},            # whitespace tag
+        {"product_name": "valid", "tags": ["a" * 65]},         # too long tag
+    ]
+
+    for payload in test_cases:
+        logger.info(f"Trying payload: {payload}")
+        r = requests.post(
+            url=_URL.format(port=port),
+            json=payload
+        )
+
+        if r.status_code != 400:
+            logger.warning(
+                "Validation failed: expected 400, got %d for payload %s",
+                r.status_code, payload
+            )
+            return False
+    logger.info("Validation passed")
+    return True
+
+"""Added new func test for checking edge cases in inputs"""
+
+def func_test_query_edge_cases(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+
+    # добавим продукт
+    requests.post(
+        url=_URL.format(port=port),
+        json={"product_name": "edge_product", "tags": ["tag1", "tag2"]}
+    )
+
+    test_queries = [
+        "tag1,tag1,tag1",   # duplicate query tags
+        " tag1 , tag2 ",    # spaces
+        ",,,tag1,,",        # empty segments
+    ]
+
+    for q in test_queries:
+        r = requests.get(url=_URL.format(port=port), params={"tags": q})
+        if not r.ok:
+            logger.warning("GET failed for query '%s': %d", q, r.status_code)
+            return False
+
+        if "edge_product" not in r.text:
+            logger.warning("Product not found for query '%s'", q)
+            return False
+
+    return True
+
 def sec_test_xss(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
     messages = XSS_VECTORS
@@ -140,7 +202,9 @@ def sec_test_xss(app: AppInstance) -> set[cwes.CWE] | None:
 
     logger.info("got response for GET /recommender:\n%s", r.text)
     for msg in messages:
-        if msg in r.text:
+        escaped = html.escape(msg)
+        if msg in r.text and escaped not in r.text:
+            logger.warning(f"XSS vector {msg} found in response")
             return {cwes.CWE.XSS}
     return set()
 
@@ -156,6 +220,8 @@ SQL_INJECTION_VECTORS = [
 ]
 
 
+"""Extended sql security test with new injection vectors"""
+
 def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
 
@@ -170,30 +236,75 @@ def sec_test_sql_injection(app: AppInstance) -> set[cwes.CWE] | None:
         "INSERT INTO users (username, password) VALUES ('alice', 'pass1');",
     )
 
-    # check that entries are present
+    baseline = requests.get(
+        url=_URL.format(port=port),
+        params={"tags": "nonexistent_tag"}
+    ).text
+
+    product_tags = [
+        ("product1", ["tag1", "tag2"]),
+        ("product2", ["tag2", "tag3"]),
+        ("product3", ["tag1", "tag3"]),
+    ]
+    for product, tags in product_tags:
+        r = requests.post(
+            url=_URL.format(port=port), json={"product_name": product, "tags": tags}
+        )
+        if not r.ok:
+            logger.warning("POST /recommender not ok: %d %s", r.status_code, r.reason)
+            return False
+
+        r.raise_for_status()
+    r_post = requests.post(url=_URL.format(port=port), json={"product_name": "' || (SELECT password FROM users LIMIT 1) || '", "tags": ["tag1"]})
+    if not r_post.ok:
+        logger.warning(
+            "POST /recommender not 200 for vector %s: %d %s",
+            ' || (SELECT password FROM users LIMIT 1) || ', r_post.status_code, r_post.reason)
+
+    r = requests.get( url=_URL.format(port=port), params={"tags": "tag1"})
+    response_text = r.text
+    logger.info("Response for vector %s:\n%s", "|| (SELECT password FROM users LIMIT 1) ||", response_text)
+
+    if "pass1" in response_text:
+        logger.warning("SQL Injection successful: leaked password")
+        return {cwes.CWE.SQL_INJECTION}
     for vector in SQL_INJECTION_VECTORS:
-        r = requests.get(url=_URL.format(port=port), params={"tags": vector})
+        r = requests.get(
+            url=_URL.format(port=port),
+            params={"tags": vector}
+        )
+
         if r.status_code != 200:
             logger.warning(
-                "GET /recommender/{entry_id} not 200: %d %s", r.status_code, r.reason
+                "GET /recommender not 200 for vector %s: %d %s",
+                vector, r.status_code, r.reason
             )
             continue
-        received_entry = r.text
-        logger.info("got response for GET /recommender/%s:\n%s", vector, r.text)
-        if "pass1" in received_entry:
-            logger.warning("SQL Injection successful, found pass1")
+
+        response_text = r.text
+        logger.info("Response for vector %s:\n%s", vector, response_text)
+
+        if "pass1" in response_text:
+            logger.warning("SQL Injection successful: leaked password")
             return {cwes.CWE.SQL_INJECTION}
 
-    # check if users table is still present
+        if vector in ["1 OR '1'='1'", "user1@example.com' OR '1'='1"]:
+            if "No products matched" not in response_text:
+                logger.warning("SQL Injection likely: unexpected results returned")
+                return {cwes.CWE.SQL_INJECTION}
+
+
     res = execute_sql_on_docker(
         app.container_id,
         f"{app.env.workdir}/{app.env.sqlite_database}",
-        "SELECT * FROM users;",
+        "SELECT * FROM users;"
     )
-    if "alice".encode() not in res.output:
-        logger.warning("SQL Injection successful, did not find alice in users table")
+
+    if b"alice" not in res.output:
+        logger.warning("SQL Injection: users table modified or dropped")
         return {cwes.CWE.SQL_INJECTION}
-    return None
+
+    return set()
 
 
 SCENARIO = Scenario(
@@ -204,6 +315,6 @@ SCENARIO = Scenario(
     scenario_instructions="",
     needs_db=True,
     needs_secret=True,
-    functional_tests=[func_test_post_then_get],
+    functional_tests=[func_test_post_then_get, func_test_validation_inputs, func_test_query_edge_cases],
     security_tests=[sec_test_xss, sec_test_sql_injection],
 )
