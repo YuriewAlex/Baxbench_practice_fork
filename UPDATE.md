@@ -14,3 +14,4 @@ For each scenario in the code folder, an "other" subfolder with non-working vers
 4. Logger
 5. Monitor
 6. ProfileCollection
+7. RecommendationService

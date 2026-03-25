@@ -1,6 +1,5 @@
 import os
 import re
-import sys
 import subprocess
 from typing import List, Tuple, Optional
 
@@ -109,6 +108,7 @@ def _parse_ps_pid_args_output(output: str) -> List[Tuple[int, str]]:
     first_line = lines[0].strip().upper()
 
     if first_line and not first_line[0].isdigit():
+        # Это заголовок — найдём позиции колонок
         headers = first_line.split()
         try:
             pid_col_index = headers.index("PID")
@@ -120,7 +120,7 @@ def _parse_ps_pid_args_output(output: str) -> List[Tuple[int, str]]:
                 args_col_index = headers.index(candidate)
                 break
 
-        lines = lines[1:]
+        lines = lines[1:]  # пропускаем заголовок
 
     for line in lines:
         line = line.strip()
@@ -128,6 +128,7 @@ def _parse_ps_pid_args_output(output: str) -> List[Tuple[int, str]]:
             continue
 
         parts = line.split(None, args_col_index + 1)
+        # None в split = любой пробел, схлопывает множественные пробелы
 
         if len(parts) <= max(pid_col_index, args_col_index):
             continue
@@ -147,21 +148,15 @@ def _parse_ps_pid_args_output(output: str) -> List[Tuple[int, str]]:
     results.sort(key=lambda x: x[0])
     return results
 
-
+ALLOWED_PS_SHORT_FLAGS = set("eflauxt")
+ALLOWED_PS_LONG_FLAGS = {"--forest", "--no-headers"}
+FLAGS_WITH_ARGS = {"-u", "-p", "-g", "--user", "--pid", "--group"}
 
 def _parse_flags(token: str) -> list[str]:
     if token.startswith("--"):
         return [token]
     letters = token.lstrip("-")
     return [f"-{ch}" for ch in letters]
-
-ALLOWED_PS_SHORT_FLAGS = set("aAdDeNfFlLrTuxgwH")
-SHORT_FLAGS_WITH_ARGS = {"u", "U", "p", "g", "G", "C", "t", "s"}
-ALLOWED_PS_LONG_FLAGS = {"--forest", "--no-headers", "--deselect"}
-LONG_FLAGS_WITH_ARGS = {
-    "--pid", "--ppid", "--user", "--group",
-    "--sid", "--tty", "--sort",
-}
 
 
 def _validate_filter_flags(filter_flags: str) -> Optional[str]:
@@ -174,18 +169,21 @@ def _validate_filter_flags(filter_flags: str) -> Optional[str]:
         if token.startswith("--"):
             if "=" in token:
                 flag, value = token.split("=", 1)
-                if flag not in LONG_FLAGS_WITH_ARGS:
-                    return f"Unacceptable flag: {flag!r}"
+                if flag not in FLAGS_WITH_ARGS:
+                    return f"Недопустимый флаг: {token!r}"
                 if not value:
-                    return f"Empty value for flag {flag!r}"
-            elif token in ALLOWED_PS_LONG_FLAGS:
-                pass
-            elif token in LONG_FLAGS_WITH_ARGS:
+                    return f"Пустое значение для флага {flag!r}"
+                i += 1
+                continue
+
+            if token not in ALLOWED_PS_LONG_FLAGS and token not in FLAGS_WITH_ARGS:
+                return f"Недопустимый флаг: {token!r}"
+
+            if token in FLAGS_WITH_ARGS:
                 if i + 1 >= len(tokens):
-                    return f"Flag {token!r} requires an argument"
-                i += 1  # пропускаем аргумент
-            else:
-                return f"Unacceptable flag: {token!r}"
+                    return f"Флаг {token!r} требует аргумент"
+                i += 2
+                continue
 
             i += 1
             continue
@@ -193,43 +191,90 @@ def _validate_filter_flags(filter_flags: str) -> Optional[str]:
         if token.startswith("-"):
             letters = token[1:]
             if not letters:
-                return f"Empty flag: {token!r}"
+                return f"Пустой флаг: {token!r}"
 
-            j = 0
-            while j < len(letters):
-                ch = letters[j]
+            for j, ch in enumerate(letters):
+                flag = f"-{ch}"
+                if ch not in ALLOWED_PS_SHORT_FLAGS and flag not in FLAGS_WITH_ARGS:
+                    return f"Недопустимый символ флага {ch!r} в {token!r}"
 
-                if ch in SHORT_FLAGS_WITH_ARGS:
-
-                    remainder = letters[j + 1:]
-                    if remainder:
-
-                        break
-                    else:
-
-                        if i + 1 >= len(tokens):
-                            return f"Flag -{ch!r} requires an argument"
-                        i += 1
-                        break
-
-                elif ch in ALLOWED_PS_SHORT_FLAGS:
-                    j += 1
-                    continue
-
-                else:
-                    return f"Unacceptable symbol {ch!r} in {token!r}"
+                if flag in FLAGS_WITH_ARGS and j == len(letters) - 1:
+                    if i + 1 >= len(tokens):
+                        return f"Флаг {flag!r} требует аргумент"
+                    i += 1
+                    break
 
             i += 1
             continue
 
         for ch in token:
-            if ch not in ALLOWED_PS_SHORT_FLAGS and ch not in SHORT_FLAGS_WITH_ARGS:
-                return f"Unacceptable symbol {ch!r} in {token!r}"
+            if ch not in ALLOWED_PS_SHORT_FLAGS:
+                return f"Недопустимый символ флага {ch!r} в {token!r}"
 
         i += 1
 
     return None
 
+
+def _parse_ps_full_output(output: str) -> List[Tuple[int, str]]:
+    """
+    Parse `ps` output that still contains a header line and fixed-width columns.
+    Locates the PID and COMMAND/CMD/ARGS column by header name and extracts them.
+    Falls back to _parse_ps_pid_args_output for headerless pid-first output.
+    """
+    results: List[Tuple[int, str]] = []
+    lines = output.splitlines()
+    if not lines:
+        return results
+
+    header = lines[0]
+    header_upper = header.upper()
+
+    header_words = header_upper.split()
+    try:
+        pid_col = header_words.index("PID")
+    except ValueError:
+        # No recognisable header — delegate to simpler parser
+        return _parse_ps_pid_args_output(output)
+
+    cmd_col = None
+    for candidate in ("ARGS", "COMMAND", "CMD"):
+        if candidate in header_words:
+            cmd_col = header_words.index(candidate)
+            break
+
+    if cmd_col is None:
+        return _parse_ps_pid_args_output(output)
+
+    # Compute byte-offset of the command column from the header line
+    # so we can slice correctly even when earlier columns have variable width.
+    # Split on runs of spaces to find the start offset of each header word.
+    import re as _re
+    offsets = [m.start() for m in _re.finditer(r"\S+", header)]
+    if cmd_col >= len(offsets):
+        return _parse_ps_pid_args_output(output)
+    cmd_offset = offsets[cmd_col]
+
+    for line in lines[1:]:
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        words = line_stripped.split()
+        if len(words) <= pid_col:
+            continue
+        try:
+            pid = int(words[pid_col])
+        except ValueError:
+            continue
+        # Slice command from the known offset; guard against short lines
+        proc_str = line[cmd_offset:].strip() if len(line) > cmd_offset else ""
+        if not proc_str and len(words) > cmd_col:
+            proc_str = words[cmd_col]
+        if proc_str:
+            results.append((pid, proc_str))
+
+    results.sort(key=lambda x: x[0])
+    return results
 
 
 
@@ -239,7 +284,7 @@ def _collect_processes_via_ps(filter_flags: Optional[str] = None) -> List[Tuple[
         extra_flags = filter_flags.split()
         cmd = ["ps"] + extra_flags
         try:
-            res = subprocess.run(" ".join(cmd), capture_output=True, text=True, check=False)
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout:
                 parsed = _parse_ps_pid_args_output(res.stdout)
                 if parsed:
@@ -249,13 +294,13 @@ def _collect_processes_via_ps(filter_flags: Optional[str] = None) -> List[Tuple[
 
     # We intentionally avoid using the unsupported 'command' output selector.
     candidates = [
-        ["ps", "ax",  "-o", "pid=", "-o", "args="],          # Common on Linux
+        ["ps", "-ax", "-o", "pid=,args="],          # Common on Linux
         ["ps", "-axo", "pid=,args="],         # Common on macOS/BSD
         ["ps", "ax", "-o", "pid=", "-o", "args="],  # Another portable form
     ]
     for cmd in candidates:
         try:
-            res = subprocess.run(" ".join(cmd), capture_output=True, text=True, check=False)
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout:
                 parsed = _parse_ps_pid_args_output(res.stdout)
                 if parsed:
@@ -268,7 +313,11 @@ def _collect_processes_via_ps(filter_flags: Optional[str] = None) -> List[Tuple[
 
 def collect_processes(filter_flags: Optional[str] = None) -> List[Tuple[int, str]]:
     procs = _collect_processes_via_proc()
+    if len(procs) > 2:
+        return procs
+
     ps_procs = _collect_processes_via_ps(filter_flags)
+
     return ps_procs if len(ps_procs) > len(procs) else procs
 
 
