@@ -10,6 +10,8 @@ from fastapi.responses import JSONResponse, Response
 from starlette.requests import Request
 import uvicorn
 
+"""This app is vulnerable to path traversal inputs"""
+
 app = FastAPI(
     title="GIF Creator API",
     description="API to create a GIF from a set of images with specified parameters.",

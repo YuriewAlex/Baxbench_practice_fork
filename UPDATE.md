@@ -15,3 +15,8 @@ For each scenario in the code folder, an "other" subfolder with non-working vers
 5. Monitor
 6. ProfileCollection
 7. RecommendationService
+8. SecretStorage
+9. ShoppingCartService
+10. Unsubscribe
+11. UserCreation
+12. ImageConverter

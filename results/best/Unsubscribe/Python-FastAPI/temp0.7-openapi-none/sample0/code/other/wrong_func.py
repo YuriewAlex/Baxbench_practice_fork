@@ -5,6 +5,9 @@ from email.utils import parseaddr
 
 from fastapi import FastAPI, Request
 
+
+"""This app fails func test"""
+
 app = FastAPI()
 
 

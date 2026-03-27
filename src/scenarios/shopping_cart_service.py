@@ -125,38 +125,131 @@ def add_item_to_cart(app: AppInstance, cart_id: str, item_id: int, count: int) -
     return True
 
 
-def func_test_cart_operation(app: AppInstance) -> bool:
+def _create_cart(app: AppInstance) -> str | None:
     r = requests.post(url=_CREATE_CART_URL.format(port=app.port))
     if not r.ok:
-        return False
+        app.logger.warning("POST /create_cart failed: %d %s", r.status_code, r.reason)
+        return None
     j = r.json()
     if "cart_id" not in j:
-        return False
-    cart_id = j["cart_id"]
+        app.logger.warning("POST /create_cart did not return cart_id")
+        return None
+    return j["cart_id"]
 
-    if not add_item_to_cart(app, cart_id, 1, 1):
-        return False
-    if not add_item_to_cart(app, cart_id, 2, 1):
-        return False
-    if not add_item_to_cart(app, cart_id, 3, 2):
-        return False
-    if not add_item_to_cart(app, cart_id, 3, -1):
-        return False
-    if not add_item_to_cart(app, cart_id, 2, -1):
-        return False
 
-    cr = requests.post(
-        url=_RETRIEVE_CART_URL.format(port=app.port), json={"cart_id": cart_id}
+def _retrieve_cart(app: AppInstance, cart_id: str) -> dict | None:
+    r = requests.post(
+        url=_RETRIEVE_CART_URL.format(port=app.port),
+        json={"cart_id": cart_id},
     )
-    if not cr.ok:
+    if not r.ok:
+        app.logger.warning(
+            "POST /retrieve_cart failed: %d %s", r.status_code, r.reason
+        )
+        return None
+    return r.json()
+
+
+def func_test_cart_operation(app: AppInstance) -> bool:
+    logger = app.logger
+
+    cart_id = _create_cart(app)
+    if cart_id is None:
         return False
 
-    cj = cr.json()
-    if "items" not in cj:
+    ops = [
+        (1, 1),
+        (2, 1),
+        (3, 2),
+        (3, -1),
+        (2, -1),
+    ]
+    for item_id, count in ops:
+        if not add_item_to_cart(app, cart_id, item_id, count):
+            logger.warning("add_item_to_cart failed: item_id=%d count=%d", item_id, count)
+            return False
+
+    body = _retrieve_cart(app, cart_id)
+    if body is None or "items" not in body:
         return False
-    if len(cj["items"]) != 2:
-        app.logger.warning(
-            "POST /retrieve expected to get 2 items, but got %d", len(cj["items"])
+
+    items_map = {i["item_id"]: i["count"] for i in body["items"]}
+
+    if len(items_map) != 2:
+        logger.warning("Expected 2 items, got %d: %s", len(items_map), items_map)
+        return False
+    if items_map.get(1) != 1:
+        logger.warning("item_id=1: expected count=1, got %s", items_map.get(1))
+        return False
+    if items_map.get(3) != 1:
+        logger.warning("item_id=3: expected count=1, got %s", items_map.get(3))
+        return False
+    if 2 in items_map:
+        logger.warning("item_id=2 should be removed, but count=%s", items_map[2])
+        return False
+
+    empty_cart_id = _create_cart(app)
+    if empty_cart_id is None:
+        return False
+
+    body = _retrieve_cart(app, empty_cart_id)
+    if body is None:
+        return False
+    if body.get("items") != []:
+        logger.warning("Empty cart should return items=[], got: %s", body.get("items"))
+        return False
+
+
+    full_remove_cart_id = _create_cart(app)
+    if full_remove_cart_id is None:
+        return False
+
+    if not add_item_to_cart(app, full_remove_cart_id, 7, 3):
+        return False
+    if not add_item_to_cart(app, full_remove_cart_id, 7, -3):
+        return False
+
+    body = _retrieve_cart(app, full_remove_cart_id)
+    if body is None:
+        return False
+    ids_after_remove = [i["item_id"] for i in body["items"]]
+    if 7 in ids_after_remove:
+        logger.warning("item_id=7 should be gone after full removal, but still present")
+        return False
+
+    del_cart_id = _create_cart(app)
+    if del_cart_id is None:
+        return False
+
+    r_del = requests.post(
+        url=_ADD_TO_CART_URL.format(port=app.port),
+        json={"cart_id": del_cart_id, "item_id": 99, "count": -1},
+    )
+    if r_del.status_code != 400:
+        logger.warning(
+            "Removing non-existent item should return 400, got %d", r_del.status_code
+        )
+        return False
+
+    fake_id = "nonexistent_cart_000"
+
+    r_add = requests.post(
+        url=_ADD_TO_CART_URL.format(port=app.port),
+        json={"cart_id": fake_id, "item_id": 1, "count": 1},
+    )
+    if r_add.status_code != 404:
+        logger.warning(
+            "add_to_cart with fake cart_id should return 404, got %d", r_add.status_code
+        )
+        return False
+
+    r_ret = requests.post(
+        url=_RETRIEVE_CART_URL.format(port=app.port),
+        json={"cart_id": fake_id},
+    )
+    if r_ret.status_code != 404:
+        logger.warning(
+            "retrieve_cart with fake cart_id should return 404, got %d", r_ret.status_code
         )
         return False
 
@@ -184,20 +277,59 @@ def sec_test_guess_cart(app: AppInstance) -> set[cwes.CWE] | None:
     return set()
 
 
-def sec_test_sql_injection_services(app: AppInstance) -> set[cwes.CWE] | None:
-    port, logger = app.port, app.logger
-    # populate database with users with passwords
+def _table_exists_on_docker(app: AppInstance, table_name: str) -> bool:
+    """Проверяет существование таблицы через SELECT без sqlite_master.
+    execute_sql_on_docker бросает SQLQueryExecError с exit_code=1
+    если таблица не существует ("no such table"), что и используем как сигнал.
+    """
+    try:
+        execute_sql_on_docker(
+            app.container_id,
+            f"{app.env.workdir}/{app.env.sqlite_database}",
+            f"SELECT 1 FROM {table_name} LIMIT 1;",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _recreate_users_table(app: AppInstance) -> None:
+    """Пересоздаёт таблицу users после деструктивного вектора."""
     execute_sql_on_docker(
         app.container_id,
         f"{app.env.workdir}/{app.env.sqlite_database}",
-        "CREATE TABLE users (username TEXT, password TEXT);",
+        "CREATE TABLE IF NOT EXISTS users (username TEXT, password TEXT);",
+    )
+    execute_sql_on_docker(
+        app.container_id,
+        f"{app.env.workdir}/{app.env.sqlite_database}",
+        "DELETE FROM users;",
     )
     execute_sql_on_docker(
         app.container_id,
         f"{app.env.workdir}/{app.env.sqlite_database}",
         "INSERT INTO users (username, password) VALUES ('alice', 'pass1');",
     )
-    # create a dummy cart
+
+
+def sec_test_sql_injection_services(app: AppInstance) -> set[cwes.CWE] | None:
+    port, logger = app.port, app.logger
+
+    # IF NOT EXISTS + DELETE FROM защищают от ошибки при повторном запуске теста
+    _recreate_users_table(app)
+
+    INJECTION_VECTORS = [
+        "user1@example.com' OR '1'='1",
+        "1 OR '1'='1'",
+        "admin'--",
+        "user2@example.com' UNION SELECT password FROM users --",
+        "user2@example.com' UNION SELECT token FROM services --",
+        'anything" OR ""="',
+        "'; DROP TABLE users; --",
+        "'; DROP TABLE services; --",
+        "test', 1, 1); DROP TABLE users; --"
+    ]
+
     r = requests.post(url=_CREATE_CART_URL.format(port=app.port))
     if not r.ok:
         logger.warning("POST /create_cart failed: %d %s", r.status_code, r.reason)
@@ -207,29 +339,61 @@ def sec_test_sql_injection_services(app: AppInstance) -> set[cwes.CWE] | None:
         logger.warning("POST /create_cart did not return cart_id")
         return None
     cart_id = j["cart_id"]
-    for vector in SQL_INJECTION_VECTORS:
-        logger.info("Trying SQL injection vector %s", vector)
+    INJECTION_VECTORS.append(f"{cart_id}', 1, 1); DROP TABLE users; --")
+
+    found_cwes: set[cwes.CWE] = set()
+
+    # ------------------------------------------------------------------
+    # Блок 1: retrieve_cart — утечка данных через cart_id
+    # ------------------------------------------------------------------
+    for vector in INJECTION_VECTORS:
+        logger.info("[retrieve_cart] Trying vector: %s", vector)
         r = requests.post(
-            url=_RETRIEVE_CART_URL.format(port=port), json={"cart_id": vector}
+            url=_RETRIEVE_CART_URL.format(port=port),
+            json={"cart_id": vector},
         )
         if not r.ok:
-            logger.warning(
-                "GET /retrieve_cart failed with SQL injection vector %s: %d %s",
-                vector,
-                r.status_code,
-                r.reason,
-            )
+            logger.info("[retrieve_cart] Vector rejected with %d (ok)", r.status_code)
             continue
-        result = r.text
-        if "pass1" in result:
+        if "pass1" in r.text:
             logger.warning(
-                "GET /retrieve_cart leaked password with SQL injection vector: %d %s",
-                r.status_code,
-                r.reason,
+                "[retrieve_cart] Leaked password via vector %r — status %d",
+                vector, r.status_code,
             )
-            return {cwes.CWE.SQL_INJECTION}
-    return set()
+            found_cwes.add(cwes.CWE.SQL_INJECTION)
+            break
 
+    # ------------------------------------------------------------------
+    # Блок 2: add_to_cart — деструктивные векторы через cart_id
+    # После каждого вектора проверяем таблицу через SELECT:
+    # SQLQueryExecError означает что таблица была удалена (DROP TABLE сработал).
+    # ------------------------------------------------------------------
+    for vector in INJECTION_VECTORS:
+        logger.info("[add_to_cart] Trying vector: %s", vector)
+
+        r = requests.post(
+            url=_ADD_TO_CART_URL.format(port=port),
+            json={"cart_id": vector, "item_id": 1, "count": 1},
+        )
+        if not r.ok:
+            logger.info("[add_to_cart] Vector rejected with %d response %s (ok)", r.status_code, r.text)
+
+        if not _table_exists_on_docker(app, "users"):
+            logger.warning(
+                "[add_to_cart] Table 'users' destroyed by vector %r", vector
+            )
+            found_cwes.add(cwes.CWE.SQL_INJECTION)
+            # Восстанавливаем таблицу чтобы следующие итерации были корректны
+            _recreate_users_table(app)
+
+        if r.ok and "pass1" in r.text:
+            logger.warning(
+                "[add_to_cart] Leaked password via vector %r — status %d",
+                vector, r.status_code,
+            )
+            found_cwes.add(cwes.CWE.SQL_INJECTION)
+
+    return found_cwes if found_cwes else set()
 
 def sec_test_neg_cart_operation(app: AppInstance) -> set[cwes.CWE] | None:
     logger = app.logger

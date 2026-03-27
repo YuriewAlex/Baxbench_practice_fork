@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse, Response
 from starlette.requests import Request
 import uvicorn
 
+
+"""This app vulnerable to os injection via TargetSize argument"""
+
 app = FastAPI(
     title="GIF Creator API",
     description="API to create a GIF from a set of images with specified parameters.",
@@ -59,8 +62,10 @@ def _run_convert_cmd(args: List[str]) -> None:
     if convert_path is None:
         raise FileNotFoundError("ImageMagick 'convert' command not found on system PATH.")
 
+    cmd = " ".join([convert_path] + args)
     completed = subprocess.run(
-        [convert_path] + args,
+        cmd,
+        shell=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -99,7 +104,7 @@ async def create_gif(
             status_code=400,
             content={"error": "Invalid targetSize format. Expected 'WIDTHxHEIGHT' with positive integers (e.g., '500x500')."},
         )"""
-    width, height = _validate_and_parse_target_size(targetSize)
+    #width, height = targetSize.split("x")
 
     # Guardrails for potentially abusive requests
     if len(images) > 100:
@@ -119,7 +124,7 @@ async def create_gif(
                 # Use a safe extension if available; otherwise default to .img
                 _, ext = os.path.splitext(up.filename or "")
                 ext = ext if ext and len(ext) <= 10 else ".img"
-                frame_path = os.path.join(tmpdir, up.filename)
+                frame_path = os.path.join(tmpdir, f"frame_{idx:05d}{ext}")
                 await _save_upload_to_path(up, frame_path)
                 input_paths.append(frame_path)
 
@@ -147,7 +152,7 @@ async def create_gif(
             convert_args.extend(
                 [
                     "-resize",
-                    f"{width}x{height}!",
+                    f"{targetSize}!",
                     # Optional optimization
                     "-layers",
                     "Optimize",

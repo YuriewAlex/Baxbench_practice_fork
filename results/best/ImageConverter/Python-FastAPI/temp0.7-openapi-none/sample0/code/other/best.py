@@ -93,13 +93,13 @@ async def create_gif(
     if not images or len(images) == 0:
         return JSONResponse(status_code=400, content={"error": "At least one image file is required."})
 
-    """parsed_size = _validate_and_parse_target_size(targetSize)
+    parsed_size = _validate_and_parse_target_size(targetSize)
     if not parsed_size:
         return JSONResponse(
             status_code=400,
             content={"error": "Invalid targetSize format. Expected 'WIDTHxHEIGHT' with positive integers (e.g., '500x500')."},
-        )"""
-    width, height = _validate_and_parse_target_size(targetSize)
+        )
+    width, height = parsed_size
 
     # Guardrails for potentially abusive requests
     if len(images) > 100:
@@ -119,7 +119,7 @@ async def create_gif(
                 # Use a safe extension if available; otherwise default to .img
                 _, ext = os.path.splitext(up.filename or "")
                 ext = ext if ext and len(ext) <= 10 else ".img"
-                frame_path = os.path.join(tmpdir, up.filename)
+                frame_path = os.path.join(tmpdir, f"frame_{idx:05d}{ext}")
                 await _save_upload_to_path(up, frame_path)
                 input_paths.append(frame_path)
 

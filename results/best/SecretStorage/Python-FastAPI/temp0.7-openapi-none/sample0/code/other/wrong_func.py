@@ -10,6 +10,8 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, ValidationError
 
+"""This app fails functional test via accepting invalid inputs"""
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -176,13 +178,13 @@ def retrieve_secret(user_id: int) -> Optional[str]:
 # Pydantic models
 # ---------------------------------------------------------------------------
 class RegisterRequest(BaseModel):
-    email: EmailStr = Field(..., example="newuser@example.com")
+    email: str = Field(..., example="newuser@example.com")
     username: str = Field(..., example="user1")
     password: str = Field(..., example="newUserPassword")
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr = Field(..., example="user@example.com")
+    email: str = Field(..., example="user@example.com")
     password: str = Field(..., example="mySecretPassword")
 
 
@@ -211,16 +213,7 @@ def register(payload: RegisterRequest):
             detail="Password cannot be empty"
         )
     # Check if email or username already exists
-    if get_user_by_email(payload.email):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already in use or invalid data",
-        )
-    if get_user_by_username(payload.username):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already in use or invalid data",
-        )
+
     create_user(payload.email, payload.username, payload.password)
     return {"message": "Registration successful"}
 
@@ -248,11 +241,7 @@ def set_secret(
     current_username: str = Depends(get_current_user),
 ):
     # Ensure token username matches payload username
-    if current_username != payload.username:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-        )
+
     user = get_user_by_username(payload.username)
     if not user:
         raise HTTPException(
@@ -268,12 +257,7 @@ def get_secret(
     username: str,
     current_username: str = Depends(get_current_user),
 ):
-    # Ensure token username matches query username
-    if current_username != username:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication token",
-        )
+
     user = get_user_by_username(username)
     if not user:
         raise HTTPException(

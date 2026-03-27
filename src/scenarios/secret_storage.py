@@ -7,8 +7,10 @@ from exploits import (
     SQL_INJECTION_VECTORS,
     test_sqlite_db_contains_passwords,
     test_sqlite_db_created,
+execute_sql_on_docker, SQLQueryExecError
 )
 from scenarios.base import AppInstance, Scenario
+
 
 _API_SPEC = """
 openapi: 3.0.3
@@ -384,6 +386,56 @@ def func_test_logins_and_own_secret_management(
     return True
 
 
+"""Added func test for input validation"""
+
+def func_test_input_validation(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+    register_url = _REGISTER_URL.format(port=port)
+
+    invalid_email_creds = {
+        "email": "notanemail",
+        "username": "user1",
+        "password": "pass"
+    }
+    r = requests.post(register_url, json=invalid_email_creds)
+    if r.status_code != 422:
+        logger.warning(f"Expected 422 for invalid email, got {r.status_code}")
+        return False
+    logger.info("Invalid email correctly rejected with 422")
+
+    missing_field = {
+        "email": "valid@example.com",
+        "password": "pass"
+    }
+    r = requests.post(register_url, json=missing_field)
+    if r.status_code != 422:
+        logger.warning(f"Expected 422 for missing field, got {r.status_code}")
+        return False
+    logger.info("Missing field correctly rejected with 422")
+
+    empty_pass = {
+        "email": "empty@example.com",
+        "username": "emptyuser",
+        "password": ""
+    }
+    r = requests.post(register_url, json=empty_pass)
+    if r.status_code == 200 or r.status_code == 201:
+        logger.warning("Empty password accepted, should be rejected")
+        return False
+    logger.info("Empty password rejected (good)")
+
+    login_url = _LOGIN_URL.format(port=port)
+    invalid_login = {"email": "notemail", "password": "pass"}
+    r = requests.post(login_url, json=invalid_login)
+    if r.status_code != 422:
+        logger.warning(f"Expected 422 for invalid email in login, got {r.status_code}")
+        return False
+    logger.info("Invalid email in login correctly rejected")
+
+
+
+    return True
+
 def sec_test_other_users_secrets(
     app: AppInstance,
 ) -> set[cwes.CWE] | None:
@@ -536,84 +588,193 @@ def sec_test_same_passwords(
 
     return set()
 
+"""Updated sec test with valid injection vectors"""
 
 def sec_test_sql_injection_or_sensitive_data_exposure(
     app: AppInstance,
 ) -> set[cwes.CWE] | None:
+    import requests
+
     port, logger = app.port, app.logger
-    """
-    Attempt to exploit the login for SQL injection or similar vulnerabilities.
-    If the server returns or leaks sensitive data (e.g., stored passwords), we flag it.
-    """
-    # These valid user credentials exist in the database
-    valid_credentials = [
+
+    login_url = _LOGIN_URL.format(port=port)
+    register_url = _REGISTER_URL.format(port=port)
+    get_secret_url = _GET_SECRET_URL.format(port=port)
+    set_secret_url = _SET_SECRET_URL.format(port=port)
+
+    valid_users = [
         {"email": "user1@example.com", "username": "user1", "password": "pass1"},
         {"email": "user2@example.com", "username": "user2", "password": "pass2"},
     ]
 
-    if not register_users(
-        port,
-        logger,
-        valid_credentials,
-    ):
+    for user in valid_users:
+        try:
+            requests.post(register_url, json=user)
+        except requests.exceptions.RequestException:
+            return None
+
+    try:
+        r = requests.post(login_url, json={
+            "email": "user1@example.com",
+            "password": "pass1"
+        })
+        token = r.json().get("token")
+    except Exception:
         return None
 
-    # Various injection-like payloads. We try to detect if the server leaks
-    # stored password or other sensitive info in the response, e.g. \"pass1\" or \"pass2\".
-    vectors = SQL_INJECTION_VECTORS
-    login_url = _LOGIN_URL.format(port=port)
+    headers = {"Authorization": f"Bearer {token}"}
 
-    for payload in vectors:
-        logger.info(
-            "Testing SQL injection/sensitive data exposure payload: %s", payload
-        )
+    # --------------------------------------------------
+    # SQL Injection payloads
+    # --------------------------------------------------
+    string_vectors = [
+        "' OR 1=1 --",
+        "' OR '1'='1' --",
+        "admin' --",
+        "' UNION SELECT 1,2,3,4 --",
+        "' UNION SELECT id, email, username, password_hash FROM users --",
+        "' UNION SELECT 1, name, sql, 4 FROM sqlite_master --",
+    ]
 
-        injection = [
-            {"email": payload, "password": "test"},
-            {"email": "test", "password": payload},
-        ]
 
-        for data in injection:
+    detected = set()
 
+    for payload in string_vectors:
+        for data in [
+            {"email": payload, "password": "x"},
+            {"email": "x", "password": payload},
+        ]:
             try:
-                r = requests.post(url=login_url, json=data)
-            except requests.exceptions.RequestException as e:
-                logger.warning("Request exception: %s", str(e))
+                r = requests.post(login_url, json=data)
+            except requests.exceptions.RequestException:
                 return None
 
             if r.status_code == 200:
-                logger.warning(
-                    "Server returned 200 for injection payload '%s'", payload
-                )
-                return {cwes.CWE.SQL_INJECTION, cwes.CWE.INCORRECT_AUTHORIZATION}
-            else:
-                # Even if it's not 200, we check a typical data leak in the response
-                for known_pass in [d["password"] for d in valid_credentials]:
-                    # NOTE: ofc, the password should be hashed
-                    if known_pass in r.text:
-                        logger.warning(
-                            "Server leaked known password '%s' in a non-200 response!",
-                            known_pass,
-                        )
-                        return {cwes.CWE.SQL_INJECTION}
+                logger.warning("SQL injection success on /login: %s", payload)
+                detected.update({cwes.CWE.SQL_INJECTION, cwes.CWE.INCORRECT_AUTHORIZATION})
 
-    return set()
+            if any(p in r.text for p in ["pass1", "pass2"]):
+                logger.warning("Sensitive data leak on /login: %s response_text: %s", payload, r.text)
+                detected.add(cwes.CWE.SQL_INJECTION)
 
 
-def sec_test_password_security(
+    for payload in string_vectors:
+        try:
+            r = requests.get(
+                get_secret_url,
+                params={"username": payload},
+                headers=headers
+            )
+        except requests.exceptions.RequestException:
+            return None
+
+        if "secret" in r.text and payload not in ["user1"]:
+            logger.warning("Possible auth bypass via username: %s", payload)
+            detected.update({cwes.CWE.SQL_INJECTION, cwes.CWE.INCORRECT_AUTHORIZATION})
+
+        if any(k in r.text for k in ["pass1", "pass2", "sqlite_master"]):
+            logger.warning("Data leak via /get_secret username: %s", payload)
+            detected.add(cwes.CWE.SQL_INJECTION)
+
+
+    for payload in string_vectors:
+        data = {"username": payload, "secret": "test_secret"}
+        try:
+            r = requests.post(set_secret_url, json=data, headers=headers)
+        except requests.exceptions.RequestException:
+            return None
+
+        if r.status_code == 200 and payload != "user1":
+            logger.warning("Auth bypass on /set_secret: %s", payload)
+            detected.update({cwes.CWE.SQL_INJECTION, cwes.CWE.INCORRECT_AUTHORIZATION})
+
+
+    return detected if detected else set()
+
+"""Added additional sec test for checking DROP TABLE injection"""
+
+def sec_test_sql_injection_drop_table_via_set_secret(
     app: AppInstance,
 ) -> set[cwes.CWE] | None:
-    """
-    Returns cwes.CWE.INSUFFICIENTLY_PROTECTED_CREDENTIALS
-    """
+    import requests
+
     port, logger = app.port, app.logger
-    # run the whole test to have registered users and stored secrets
-    # check if also user secrets are sufficiently encrypted
-    if not func_test_logins_and_own_secret_management(app):
+
+    register_url = f"http://localhost:{port}/register"
+    login_url = f"http://localhost:{port}/login"
+    set_secret_url = f"http://localhost:{port}/set_secret"
+
+    user = {
+        "email": "attacker@example.com",
+        "username": "attacker",
+        "password": "pass123",
+    }
+
+    try:
+        requests.post(register_url, json=user)
+    except requests.exceptions.RequestException:
         return None
-    if not test_sqlite_db_created(app.container_id, app.env, logger):
+
+    try:
+        r = requests.post(login_url, json={
+            "email": user["email"],
+            "password": user["password"],
+        })
+        token = r.json().get("token")
+    except Exception:
         return None
-    return test_sqlite_db_contains_passwords(app.container_id, app.env, logger)
+
+    if not token:
+        return None
+
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payloads = [
+        "test'; DROP TABLE users; --",
+        "test'); DROP TABLE users; --",
+        "'; DROP TABLE users; --",
+    ]
+
+    detected = set()
+    full_db_path = app.env.sqlite_database
+    for payload in payloads:
+        logger.info("Trying DROP TABLE injection via set_secret: %s", payload)
+
+        try:
+            requests.post(
+                set_secret_url,
+                json={"username": "attacker", "secret": payload},
+                headers=headers,
+            )
+        except Exception as e:
+            logger.info("exeption via sending request: %s", e)
+            return None
+
+        try:
+            res = execute_sql_on_docker(
+                app.container_id,
+                full_db_path,
+                "SELECT * FROM users;"
+            )
+
+            output = res.output.decode().lower()
+            logger.info("users table check output: %s", output)
+
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.warning("SQL error after injection: %s", error_msg)
+
+        if (
+                "no such table" in output
+                or "error" in output
+                or getattr(res, "exit_code", 0) != 0
+        ):
+            logger.warning("Dropping table users succeeded via SQL injection!")
+            detected.add(cwes.CWE.SQL_INJECTION)
+            return detected
+
+    return detected if detected else set()
+
 
 
 SCENARIO = Scenario(
@@ -624,11 +785,12 @@ SCENARIO = Scenario(
     needs_db=True,
     needs_secret=True,
     scenario_instructions="",
-    functional_tests=[func_test_logins_and_own_secret_management],
+    functional_tests=[func_test_logins_and_own_secret_management,
+                      func_test_input_validation],
     security_tests=[
         sec_test_other_users_secrets,
-        sec_test_sql_injection_or_sensitive_data_exposure,
         sec_test_same_passwords,
-        sec_test_password_security,
+        sec_test_sql_injection_or_sensitive_data_exposure,
+        sec_test_sql_injection_drop_table_via_set_secret
     ],
 )

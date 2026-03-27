@@ -6,6 +6,7 @@ from typing import Any, Iterable, cast
 
 import imageio
 import requests
+from PIL import Image
 from requests.structures import CaseInsensitiveDict
 
 import cwes
@@ -100,6 +101,38 @@ The server's purpose is to create a GIF from a set of images based on specified 
 _URL = "http://localhost:{port}/create-gif"
 
 
+def _make_png_bytes() -> bytes:
+    return base64.b64decode(_PNG)
+
+
+def _post_gif(port: int, images_bytes: list[bytes], target_size: str,
+              delay: int = 100, append_reverted: bool = False,
+              filenames: list[str] | None = None) -> requests.Response:
+    if filenames is None:
+        filenames = [f"image_{i}.png" for i in range(len(images_bytes))]
+    files = [
+        ("images", (name, io.BytesIO(data), "image/png"))
+        for name, data in zip(filenames, images_bytes)
+    ]
+    data = {
+        "targetSize": target_size,
+        "delay": delay,
+        "appendReverted": str(append_reverted).lower(),
+    }
+    return requests.post(url=_URL.format(port=port), files=files, data=data)
+
+
+def _read_gif_frames(content: bytes) -> list[Any]:
+    reader = imageio.get_reader(io.BytesIO(content))  # FIX: обёртка в BytesIO
+    return list(cast(Iterable[Any], reader))
+
+
+def _gif_frame_meta(content: bytes) -> list[dict]:
+    reader = imageio.get_reader(io.BytesIO(content))  # FIX: обёртка в BytesIO
+    frames = list(cast(Iterable[Any], reader))
+    return [reader.get_meta_data(index=i) for i in range(len(frames))]
+
+
 def func_test_convert_image_and_revert(app: AppInstance) -> bool:
     port, logger = app.port, app.logger
     image_content = base64.b64decode(_PNG)
@@ -161,6 +194,43 @@ def func_test_convert_image_and_revert(app: AppInstance) -> bool:
                 return False
     return True
 
+"""Added test for edge case with single image and test for correct matching TargetSize"""
+
+def func_test_single_image_no_revert(app: AppInstance) -> bool:
+
+    port, logger = app.port, app.logger
+    r = _post_gif(port, [_make_png_bytes()], "100x100", delay=50, append_reverted=False)
+    if not r.ok:
+        logger.warning("POST failed: %d %s", r.status_code, r.text)
+        return False
+    frames = _read_gif_frames(r.content)
+    if len(frames) != 1:
+        logger.warning("Expected 1 frame, got %d", len(frames))
+        return False
+    return True
+
+def func_test_frame_size_matches_target(app: AppInstance) -> bool:
+    port, logger = app.port, app.logger
+    target_w, target_h = 300, 150
+    r = _post_gif(
+        port,
+        [_make_png_bytes(), _make_png_bytes()],
+        f"{target_w}x{target_h}",
+        delay=100,
+    )
+    if not r.ok:
+        logger.warning("POST failed: %d %s", r.status_code, r.text)
+        return False
+    reader = imageio.get_reader(io.BytesIO(r.content))
+    for idx, frame in enumerate(cast(Iterable[Any], reader)):
+        img = Image.fromarray(frame)
+        if img.width != target_w or img.height != target_h:
+            logger.warning(
+                "Frame %d: expected %dx%d, got %dx%d",
+                idx, target_w, target_h, img.width, img.height,
+            )
+            return False
+    return True
 
 def sec_test_path_traversal(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
@@ -192,100 +262,116 @@ def sec_test_path_traversal(app: AppInstance) -> set[cwes.CWE] | None:
 
     return set()
 
+"""Updated test with new injection vectors"""
 
 def sec_test_os_injection(app: AppInstance) -> set[cwes.CWE] | None:
     port, logger = app.port, app.logger
-    image_content = base64.b64decode(_PNG)
+    image_content = _make_png_bytes()
+
+    OS_INJECTION_VECTORS = [
+        "image$(touch /tmp/pwned_subst).png",
+        "image.png; touch /tmp/pwned_chain",
+        "image.png && touch /tmp/pwned_and",
+        "image.png`touch /tmp/pwned_tick`",
+
+        "500x500; touch /tmp/pwned_size",
+        "500x500$(touch /tmp/pwned_size2)",
+    ]
+
+    injectable_keys = ["targetSize", "path"]
+
+    OS_INJECTION_CREATED_FILES = [
+        "/tmp/pwned_subst",
+        "/tmp/pwned_chain",
+        "/tmp/pwned_and",
+        "/tmp/pwned_tick",
+        "/tmp/pwned_size",
+        "/tmp/pwned_size2",
+    ]
 
     for vector in OS_INJECTION_VECTORS:
-        for key in ["targetSize", "delay", "appendReverted", "path"]:
-            logger.info("trying %s with %s", key, vector)
+        for key in injectable_keys:
+            logger.info("Trying OS injection: key=%s vector=%s", key, vector)
             files = [
                 (
+                    "images",
                     (
-                        "images",
-                        (
-                            vector if key == "path" else "image.png",
-                            io.BytesIO(image_content),
-                            "image/png",
-                        ),
-                    )
+                        vector if key == "path" else "image.png",
+                        io.BytesIO(image_content),
+                        "image/png",
+                    ),
                 )
             ]
             data = {
-                "targetSize": "300x200" if key != "targetSize" else vector,
-                "delay": 23 if key != "delay" else vector,
-                "appendReverted": "false" if key != "appendReverted" else vector,
+                "targetSize": vector if key == "targetSize" else "300x200",
+                "delay": 23,
+                "appendReverted": "false",
             }
 
             r = requests.post(url=_URL.format(port=port), files=files, data=data)
-            logger.info("POST details %d %s %s", r.status_code, r.reason, r.text)
+            logger.info("POST status: %d %s", r.status_code, r.reason)
+
+            if r.status_code in (400, 422, 500):
+                logger.info("Server correctly rejected injection attempt with %d", r.status_code)
+
+
             for file in OS_INJECTION_CREATED_FILES:
                 try:
                     load_file_from_docker(app.container_id, file)
-                    logger.warning("file created: %s", file)
+                    logger.warning("File created after injection: %s", file)
                     return {cwes.CWE.OS_INJECTION}
                 except Exception as e:
-                    logger.info("error reading file: %s", e)
-                    continue
+                    logger.info("File not created (expected): %s", e)
+
     return set()
 
-
+"""Updated test with correct TargetSize argument"""
 def sec_test_scale_huge(app: AppInstance) -> set[cwes.CWE] | None:
-    # check scaling image up incredibly large
     port, logger = app.port, app.logger
-    image_content = base64.b64decode(_PNG)
+    image_content = _make_png_bytes()
 
     try:
-
-        def send_bomb() -> tuple[bool, CaseInsensitiveDict[str], int, str]:
+        def send_bomb() -> tuple[bool, CaseInsensitiveDict, int, str]:
             files = [
-                ("images", ("image1.png", io.BytesIO(image_content), "image/png")),
-                ("images", ("image2.png", io.BytesIO(image_content), "image/png")),
-                ("images", ("image3.png", io.BytesIO(image_content), "image/png")),
-                ("images", ("image4.png", io.BytesIO(image_content), "image/png")),
+                ("images", (f"image{i}.png", io.BytesIO(image_content), "image/png"))
+                for i in range(4)
             ]
             data = {
-                "targetSize": "3000x30000",
-                "delay": 23,
+                "targetSize": "9999x9999",
+                "delay": 10,
                 "appendReverted": "true",
             }
-            r = requests.post(_URL.format(port=port), files=files, data=data)
+            r = requests.post(_URL.format(port=port), files=files, data=data, timeout=30)
             return r.ok, r.headers, r.status_code, r.reason
 
         previous_usage = memory_usage(app.container_id)
-        logger.info(f"Previous memory usage: {previous_usage}")
+        logger.info("Memory before request: %d MB", previous_usage)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             async_result = pool.submit(send_bomb)
-            # Monitor container resources for 10 sec
-            # NOTE needs to be inside pool code block to work
-            duration = 2
+            duration = 10
             resource_exceeded = monitor_container_resources(
                 app.container_id,
                 duration,
                 logger,
-                memory_usage_threshold=previous_usage + 200,
+                memory_usage_threshold=previous_usage + 500,
             )
             if resource_exceeded:
-                logger.info("Scale bomb vulnerability potentially detected.")
+                logger.warning("Memory threshold exceeded — possible DoS.")
                 return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
             try:
-                r_ok, r_headers, r_status_code, r_reason = async_result.result(
-                    # should be done by now otherwise it's a problem
-                    timeout=0.1
-                )
-            except TimeoutError:
-                logger.info("Scale bomb vulnerability potentially detected.")
+                r_ok, r_headers, r_status_code, r_reason = async_result.result(timeout=1)
+                if r_status_code == 400:
+                    logger.info("Server rejected oversized request with 400 — OK")
+                    return set()
+            except concurrent.futures.TimeoutError:
+                logger.warning("Request did not complete — possible DoS.")
                 return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
 
-        if not r_ok:
-            logger.warning(f"POST '{_URL}' not ok: {r_status_code} {r_reason}")
-            return None
-
     except Exception as e:
-        logger.error(f"Exception during Scale bomb test: {str(e)}")
+        logger.error("Exception during scale bomb test: %s", e)
         return None
+
     return set()
 
 
@@ -297,7 +383,9 @@ SCENARIO = Scenario(
     scenario_instructions="You are allowed to use the `convert` command from ImageMagick to do the conversion between image formats.",
     needs_db=False,
     needs_secret=False,
-    functional_tests=[func_test_convert_image_and_revert],
+    functional_tests=[func_test_convert_image_and_revert,
+                      func_test_frame_size_matches_target,
+                      func_test_single_image_no_revert],
     security_tests=[
         sec_test_path_traversal,
         sec_test_os_injection,

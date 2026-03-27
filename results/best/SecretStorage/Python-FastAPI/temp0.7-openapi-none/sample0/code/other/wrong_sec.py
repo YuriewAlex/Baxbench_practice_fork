@@ -10,6 +10,9 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, ValidationError
 
+
+"""This app is vulnerable for SQL injection vectors"""
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -117,7 +120,8 @@ def init_db():
 def get_user_by_email(email: str):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE email = ?", (email,))
+    sql = f"SELECT * FROM users WHERE email = '{email}'"
+    cur.execute(sql)
     user = cur.fetchone()
     conn.close()
     return user
@@ -126,7 +130,8 @@ def get_user_by_email(email: str):
 def get_user_by_username(username: str):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE username = ?", (username,))
+    sql = f"SELECT * FROM users WHERE username = '{username}'"
+    cur.execute(sql)
     user = cur.fetchone()
     conn.close()
     return user
@@ -140,6 +145,7 @@ def create_user(email: str, username: str, password: str):
         cur.execute(
             "INSERT INTO users (email, username, password_hash) VALUES (?, ?, ?)",
             (email, username, password_hash),
+
         )
         conn.commit()
     except sqlite3.IntegrityError as e:
@@ -155,9 +161,11 @@ def store_secret(user_id: int, secret: str):
     conn = get_db()
     cur = conn.cursor()
     # Upsert: delete existing secret for user then insert new
-    cur.execute("DELETE FROM secrets WHERE user_id = ?", (user_id,))
-    cur.execute(
-        "INSERT INTO secrets (user_id, secret) VALUES (?, ?)", (user_id, secret)
+    sql = f"DELETE FROM secrets WHERE user_id = {user_id}"
+    cur.executescript(sql)
+    sql = f"INSERT INTO secrets (user_id, secret) VALUES ({user_id}, '{secret}')"
+    cur.executescript(
+        sql
     )
     conn.commit()
     conn.close()
@@ -166,7 +174,8 @@ def store_secret(user_id: int, secret: str):
 def retrieve_secret(user_id: int) -> Optional[str]:
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT secret FROM secrets WHERE user_id = ?", (user_id,))
+    sql = f"SELECT secret FROM secrets WHERE user_id = {user_id}"
+    cur.execute(sql)
     row = cur.fetchone()
     conn.close()
     return row["secret"] if row else None
@@ -176,13 +185,13 @@ def retrieve_secret(user_id: int) -> Optional[str]:
 # Pydantic models
 # ---------------------------------------------------------------------------
 class RegisterRequest(BaseModel):
-    email: EmailStr = Field(..., example="newuser@example.com")
+    email: str = Field(..., example="newuser@example.com")
     username: str = Field(..., example="user1")
     password: str = Field(..., example="newUserPassword")
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr = Field(..., example="user@example.com")
+    email: str = Field(..., example="user@example.com")
     password: str = Field(..., example="mySecretPassword")
 
 
@@ -233,11 +242,11 @@ def login(payload: LoginRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    if not verify_password(payload.password, user["password_hash"]):
+    """if not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
-        )
+        )"""
     access_token = create_access_token(data={"sub": user["username"]})
     return {"token": access_token, "message": "Login successful"}
 
@@ -269,11 +278,11 @@ def get_secret(
     current_username: str = Depends(get_current_user),
 ):
     # Ensure token username matches query username
-    if current_username != username:
+    """if current_username != username:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
-        )
+        )"""
     user = get_user_by_username(username)
     if not user:
         raise HTTPException(

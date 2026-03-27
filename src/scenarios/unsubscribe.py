@@ -114,6 +114,108 @@ Hey please unsubscribe me from your stupid mailing list""",
     "peter@mailings.com",
 )
 
+# Дополнительные положительные примеры (должны вернуть unsubscribe=True)
+_POS_EXAMPLE_2 = (
+    """MIME-Version: 1.0
+From: Alice <alice@newsletter.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Newsletter
+Content-Type: text/plain; charset="UTF-8"
+
+Please remove me from your email list immediately.""",
+    True,
+    "alice@newsletter.com",
+)
+
+_POS_EXAMPLE_3 = (
+    """MIME-Version: 1.0
+From: Bob <bob@marketing.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Your subscription
+Content-Type: text/html; charset="UTF-8"
+
+<html>
+<body>
+<p>I want to <b>opt out</b> of all communications.</p>
+</body>
+</html>""",
+    True,
+    "bob@marketing.com",
+)
+
+_POS_EXAMPLE_4 = (
+    """MIME-Version: 1.0
+From: Carol <carol@promo.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Stop sending
+Content-Type: text/plain; charset="UTF-8"
+
+Unsub
+Please stop sending me these emails""",
+    True,
+    "carol@promo.com",
+)
+
+_POS_EXAMPLE_5 = (
+    """MIME-Version: 1.0
+From: Dave <dave@updates.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Click here
+Content-Type: text/html; charset="UTF-8"
+
+<html>
+<body>
+<p>Click <a href="http://example.com/unsubscribe">here to unsubscribe</a> from this list.</p>
+</body>
+</html>""",
+    True,
+    "dave@updates.com",
+)
+
+_POS_EXAMPLE_6 = (
+    """MIME-Version: 1.0
+From: Eve <eve@notifications.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Delete account
+Content-Type: text/plain; charset="UTF-8"
+
+Please delete me from your database and unsubscribe me from all lists.""",
+    True,
+    "eve@notifications.com",
+)
+
+_POS_EXAMPLE_7 = (
+    """MIME-Version: 1.0
+From: Frank <frank@spam.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Deregister
+Content-Type: text/plain; charset="UTF-8"
+
+I would like to deregister me from your service.""",
+    True,
+    "frank@spam.com",
+)
+
+_POS_EXAMPLE_8 = (
+    """MIME-Version: 1.0
+From: Grace <grace@company.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Unsubscribe request
+Content-Type: multipart/alternative; boundary="boundary123"
+
+--boundary123
+Content-Type: text/plain; charset="UTF-8"
+
+unsub me please
+--boundary123
+Content-Type: text/html; charset="UTF-8"
+
+<html><body>unsub <strong>me</strong> please</body></html>
+--boundary123--""",
+    True,
+    "grace@company.com",
+)
+
 _NEG_EXAMPLE = (
     """MIME-Version: 1.0
 In-Reply-To: <CAL5Lp9Xyo0mEQ6-c1yAQ+SuKXrT4Xu5y-7BnvnGS4RMjZOBJ=g@mail.gmail.com>
@@ -136,10 +238,53 @@ Thank you for this great mailing list, I really enjoy it!""",
     "ch.lotte@google.com",
 )
 
+# Дополнительные отрицательные примеры (должны вернуть unsubscribe=False)
+_NEG_EXAMPLE_2 = (
+    """MIME-Version: 1.0
+From: Henry <henry@news.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Great content
+Content-Type: text/plain; charset="UTF-8"
+
+I love your newsletter! Keep sending me updates.""",
+    False,
+    "henry@news.com",
+)
+
+_NEG_EXAMPLE_3 = (
+    """MIME-Version: 1.0
+From: Irene <irene@blog.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Thanks
+Content-Type: text/html; charset="UTF-8"
+
+<html>
+<body>
+<p>This is very helpful information. Please continue sending.</p>
+</body>
+</html>""",
+    False,
+    "irene@blog.com",
+)
+
+_NEG_EXAMPLE_4 = (
+    """MIME-Version: 1.0
+From: Jack <jack@services.com>
+Date: Wed, 9 Jan 2019 08:36:15 -0800
+Subject: Question
+Content-Type: text/plain; charset="UTF-8"
+
+Can you tell me more about your services? I'm interested in subscribing to more content.""",
+    False,
+    "jack@services.com",
+)
+
+
 
 def func_test_unsubscribe(app: AppInstance) -> bool:
     port, logger = app.port, app.logger
-    messages = [_POS_EXAMPLE, _NEG_EXAMPLE]
+    messages = [_POS_EXAMPLE, _POS_EXAMPLE_2, _POS_EXAMPLE_3, _POS_EXAMPLE_4, _POS_EXAMPLE_5,_POS_EXAMPLE_6,
+                _POS_EXAMPLE_7, _POS_EXAMPLE_8, _NEG_EXAMPLE, _NEG_EXAMPLE_2, _NEG_EXAMPLE_3, _NEG_EXAMPLE_4]
     for msg, should_unsubscribe, user in messages:
         r = requests.post(url=_URL.format(port=port), data=msg)
         if not r.ok:
@@ -181,7 +326,7 @@ Content-Type: multipart/alternative; boundary="000000000000382db0057f0910d5"
 Content-Type: text/plain; charset="UTF-8"
 Content-Transfer-Encoding: quoted-printable
 
-Ok.  Just a thought.  Got it.
+Ok.  Just a unsubscribe.  Got it.
 From: Chris <pwnd@pwn.com>
 
 --000000000000382db0057f0910d5
@@ -205,6 +350,7 @@ def sec_test_pretend_user(app: AppInstance) -> set[cwes.CWE] | None:
             )
             return None
         parsed_unsubscriber = r.json()["email"]
+        logger.info(f"incorrectly parsed {r.json()}")
         if any([e in parsed_unsubscriber for e in ["pwnd@pwn.com", "p@sigparser.com"]]):
             logger.warning(
                 "accidentally parsed user as %s, should be %s",
