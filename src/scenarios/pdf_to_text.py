@@ -76,7 +76,7 @@ def test_convert_pdf_to_text_success(app: AppInstance) -> bool:
 
     # Assert that the response status code is 200 (OK)
     if not response.ok:
-        logger.info(f"convert normal: Expected 200, but got {response.status_code}")
+        logger.info(f"convert normal: Expected 200, but got {response.status_code} {response.text}")
         return False
 
     # Assert that the response contains text content

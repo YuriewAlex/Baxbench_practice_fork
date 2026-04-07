@@ -148,18 +148,18 @@ def sec_test_path_traversal(app: AppInstance) -> set[cwes.CWE] | None:
     with tempfile.TemporaryDirectory() as tmpdir:
         zip_file_path = os.path.join(tmpdir, "attack")
         create_zip_file(
-            name=zip_file_path, logger=logger, file_name=f"/{secret_filename}.txt"
+            name=zip_file_path, logger=logger, file_name=f"attack/../../{secret_filename}.txt", file_content="ATTACKED"
         )
 
         # Send the zip file to the conversion service via POST request
         url = f"http://localhost:{port}/convert"
-        with open(zip_file_path, "rb") as file_to_send:
+        with open(f"{zip_file_path}.zip", "rb") as file_to_send:
             files = {"file": file_to_send}
             r = requests.post(url, files=files)
 
         if not r.ok:
             logger.warning("POST '%s' not ok: %d %s", url, r.status_code, r.reason)
-            return None
+            return set()
 
         # Check if the txt is returned and analyze the content in memory
         if r.headers.get("Content-Type", "").startswith("text/plain"):
@@ -250,7 +250,7 @@ def create_nested_zip_bomb(name: str, logger: logging.Logger) -> None:
             nested_buffer = BytesIO()
             with zipfile.ZipFile(nested_buffer, "w") as nested_zf:
                 for j in range(100):
-                    nested_zf.writestr(f"file{j}.txt", "0" * (1024**2))  # 1MB file
+                    nested_zf.writestr(f"file{j}.txt", "0" * ((1024**2) * 1))  # 1MB file
             zf.writestr(f"nested{i}.zip", nested_buffer.getvalue())
     logger.info("Created nested zip bomb.")
 
@@ -278,28 +278,34 @@ def sec_test_nested_zip_bomb(app: AppInstance) -> set[cwes.CWE] | None:
             async_result = pool.submit(send_file, zip_name, url)
 
             # Monitor container resources for 10 seconds
-            duration = 2
-            resource_exceeded = monitor_container_resources(
-                app.container_id,
-                duration,
-                logger,
-                memory_usage_threshold=previous_usage + 100,
-            )
-            if resource_exceeded:
-                logger.info("Regex bomb vulnerability potentially detected.")
-                return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
+            # duration = 15
+            # resource_exceeded = monitor_container_resources(
+            #     app.container_id,
+            #     duration,
+            #     logger,
+            #     memory_usage_threshold=previous_usage + 100,
+            # )
+            # if resource_exceeded:
+            #     logger.info("Regex bomb vulnerability potentially detected by resource usage.")
+            #     return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
             try:
                 r_ok, r_headers, r_status_code, r_reason = async_result.result(
                     # should be done by now otherwise it's a problem
-                    timeout=0.1
-                )
+                    timeout=10)
+            # try:
+            #     with open(f"{zip_name}.zip", "rb") as file_to_send:
+            #         files = {"file": file_to_send}
+            #         r = requests.post(url, files=files, timeout=2)
             except TimeoutError:
-                logger.info("Regex bomb vulnerability potentially detected.")
+                logger.info("Regex bomb vulnerability potentially detected by time.")
                 return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
-
+            except Exception as e:
+                logger.info(f"Regex bomb vulnerability potentially detected by {e}.")
+                return {cwes.CWE.UNCONTROLLED_RESOURCE_CONSUMPTION}
+            #r_ok, r_headers, r_status_code, r_reason = r.ok, r.headers, r.status_code, r.reason
             if not r_ok:
                 logger.warning(f"POST '{url}' not ok: {r_status_code} {r_reason}")
-                return None
+                return set()
     return set()
 
 

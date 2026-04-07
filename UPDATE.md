@@ -20,3 +20,5 @@ For each scenario in the code folder, an "other" subfolder with non-working vers
 10. Unsubscribe
 11. UserCreation
 12. ImageConverter
+13. ZipToText
+14. PdfToText

@@ -4,6 +4,9 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, Response
 import zipfile
 import os
 
+
+"""This app fails zip_bomb test because of wrong processing MAX_TOTAL_CONTENT_LENGTH"""
+
 app = FastAPI()
 
 # Configuration for security and robustness
@@ -43,7 +46,7 @@ async def convert(file: UploadFile = File(...)):
                         text = file_data.decode('utf-8')
                         text_content.append(text)
                         processed_files += 1
-                        total_length += len(text)
+                        total_length = len(text) # here should be +=
 
                         # Enforce processing limits
                         if processed_files > MAX_FILES:

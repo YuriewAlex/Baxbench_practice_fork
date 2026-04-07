@@ -9,7 +9,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import Response
 import uvicorn
 
-MAX_UPLOAD_SIZE = 5 * 1024 * 1024 
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024
 MAX_CONCURRENT_CONVERSIONS = 5
 PDF_HEADER = b"%PDF"
 PDTO_TEXT_TIMEOUT = 30
