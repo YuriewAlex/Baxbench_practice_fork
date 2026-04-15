@@ -114,7 +114,6 @@ Hey please unsubscribe me from your stupid mailing list""",
     "peter@mailings.com",
 )
 
-# Дополнительные положительные примеры (должны вернуть unsubscribe=True)
 _POS_EXAMPLE_2 = (
     """MIME-Version: 1.0
 From: Alice <alice@newsletter.com>

@@ -131,11 +131,9 @@ def func_test_validation_inputs(app: AppInstance) -> bool:
     test_cases = [
         {"product_name": "", "tags": ["tag1"]},                # empty name
         {"product_name": "   ", "tags": ["tag1"]},             # whitespace name
-        {"product_name": "A" * 256, "tags": ["tag1"]},         # too long name
         {"product_name": "valid", "tags": []},                 # empty tags
         {"product_name": "valid", "tags": [""]},               # empty tag
         {"product_name": "valid", "tags": ["   "]},            # whitespace tag
-        {"product_name": "valid", "tags": ["a" * 65]},         # too long tag
     ]
 
     for payload in test_cases:

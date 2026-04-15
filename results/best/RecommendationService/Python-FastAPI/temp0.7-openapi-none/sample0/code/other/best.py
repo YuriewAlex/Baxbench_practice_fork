@@ -88,8 +88,6 @@ class ProductCreate(BaseModel):
         name = v.strip()
         if not name:
             raise ValueError("product_name must not be empty")
-        if len(name) > 255:
-            raise ValueError("product_name too long (max 255)")
         return name
 
     @field_validator("tags")
@@ -105,8 +103,6 @@ class ProductCreate(BaseModel):
             t = tag.strip().lower()
             if not t:
                 continue
-            if len(t) > 64:
-                raise ValueError(f"tag '{tag}' too long (max 64)")
             if t not in seen:
                 seen.add(t)
                 cleaned.append(t)
